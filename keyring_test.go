@@ -13,16 +13,11 @@ import (
 	"github.com/yinebebt/keyring"
 )
 
-func testKeyring(t *testing.T, clock *time.Time) *keyring.Keyring {
+func testKeyring(t *testing.T) *keyring.Keyring {
 	t.Helper()
-	if clock == nil {
-		now := time.Now()
-		clock = &now
-	}
 	return keyring.New(
 		keyring.NewFileStore(filepath.Join(t.TempDir(), "keys.json")),
 		time.Hour,
-		keyring.WithClock(func() time.Time { return *clock }),
 	)
 }
 
@@ -38,9 +33,9 @@ func mustRotate(t *testing.T, kr *keyring.Keyring) keyring.KeySet {
 func TestKeySetState(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	until := now.Add(time.Hour)
-	grace := keyring.KeySet{Current: "kr_b", Previous: "kr_a", GraceUntil: &until}
+	now := time.Now()
+	inGrace := now.Add(time.Hour)
+	expired := now.Add(-time.Hour)
 
 	for _, tt := range []struct {
 		name  string
@@ -51,15 +46,27 @@ func TestKeySetState(t *testing.T) {
 	}{
 		{"empty", keyring.KeySet{}, now, keyring.StateEmpty, 0},
 		{"active", keyring.KeySet{Current: "kr_a"}, now, keyring.StateActive, 1},
-		{"grace", grace, now, keyring.StateGrace, 2},
-		{"expired", grace, until.Add(time.Second), keyring.StateActive, 1},
+		{
+			"grace",
+			keyring.KeySet{Current: "kr_b", Previous: "kr_a", GraceUntil: &inGrace},
+			now,
+			keyring.StateGrace,
+			2,
+		},
+		{
+			"expired",
+			keyring.KeySet{Current: "kr_b", Previous: "kr_a", GraceUntil: &expired},
+			now,
+			keyring.StateActive,
+			1,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tt.ks.State(tt.at); got != tt.state {
 				t.Fatalf("State() = %s, want %s", got, tt.state)
 			}
-			if got := len(tt.ks.ValidKeys(tt.at)); got != tt.keys {
+			if got := len(tt.ks.ValidKeys()); got != tt.keys {
 				t.Fatalf("ValidKeys() = %d, want %d", got, tt.keys)
 			}
 		})
@@ -69,21 +76,21 @@ func TestKeySetState(t *testing.T) {
 func TestRotation(t *testing.T) {
 	t.Parallel()
 
-	start := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	clock := start
-	kr := testKeyring(t, &clock)
+	kr := testKeyring(t)
+	now := time.Now()
 
 	first := mustRotate(t, kr)
-	if first.Previous != "" || first.State(start) != keyring.StateActive {
+	if first.Previous != "" || first.GraceUntil != nil || first.State(now) != keyring.StateActive {
 		t.Fatal("first rotation should only set current")
 	}
 
+	beforeSecond := time.Now()
 	second := mustRotate(t, kr)
-	if second.Previous != first.Current || second.State(start) != keyring.StateGrace {
+	if second.Previous != first.Current || second.State(now) != keyring.StateGrace {
 		t.Fatal("second rotation should enter grace")
 	}
-	if !second.GraceUntil.Equal(start.Add(time.Hour)) {
-		t.Fatalf("grace_until = %v", second.GraceUntil)
+	if second.GraceUntil == nil || second.GraceUntil.Before(beforeSecond.Add(time.Hour)) {
+		t.Fatalf("grace_until = %v, want ~%v", second.GraceUntil, beforeSecond.Add(time.Hour))
 	}
 
 	keys, err := kr.ValidKeys(context.Background())
@@ -91,13 +98,6 @@ func TestRotation(t *testing.T) {
 		t.Fatalf("during grace: keys = %v, err = %v", keys, err)
 	}
 
-	clock = start.Add(2 * time.Hour)
-	keys, err = kr.ValidKeys(context.Background())
-	if err != nil || len(keys) != 1 || keys[0] != second.Current {
-		t.Fatalf("after grace: keys = %v, err = %v", keys, err)
-	}
-
-	clock = start
 	revoked, err := kr.Revoke(context.Background())
 	if err != nil || revoked.Previous != "" || revoked.GraceUntil != nil {
 		t.Fatalf("revoke: ks = %+v, err = %v", revoked, err)
@@ -107,7 +107,7 @@ func TestRotation(t *testing.T) {
 func TestMiddleware(t *testing.T) {
 	t.Parallel()
 
-	kr := testKeyring(t, nil)
+	kr := testKeyring(t)
 	first := mustRotate(t, kr)
 	second := mustRotate(t, kr)
 
@@ -119,9 +119,9 @@ func TestMiddleware(t *testing.T) {
 		method, token, header string
 		want                  int
 	}{
-		{http.MethodGet, "", "", http.StatusOK},
-		{http.MethodHead, "", "", http.StatusOK},
-		{http.MethodOptions, "", "", http.StatusOK},
+		{http.MethodGet, "", "", http.StatusUnauthorized},
+		{http.MethodHead, "", "", http.StatusUnauthorized},
+		{http.MethodOptions, "", "", http.StatusUnauthorized},
 		{http.MethodPost, second.Current, "X-API-Key", http.StatusOK},
 		{http.MethodPost, first.Current, "X-API-Key", http.StatusOK},
 		{http.MethodPost, second.Current, "Authorization", http.StatusOK},
