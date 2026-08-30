@@ -14,8 +14,8 @@ const (
 	StateGrace  State = "GRACE"
 )
 
-// KeySet is the rotation state for one API key slot: a current key, an optional
-// previous key during grace, and rotation metadata. One KeySet per service.
+// KeySet is the rotation state for one API key slot: a current key and
+// an optional previous key during grace.
 type KeySet struct {
 	Current    string     `json:"current"`
 	Previous   string     `json:"previous"`
@@ -36,20 +36,19 @@ func (k KeySet) State(now time.Time) State {
 
 // ValidKeys returns keys that should be accepted by auth middleware at now.
 // Previous is omitted once the grace period has expired.
-func (k KeySet) ValidKeys(now time.Time) []string {
+func (k KeySet) ValidKeys() []string {
 	var keys []string
 	if k.Current != "" {
 		keys = append(keys, k.Current)
 	}
-	if k.Previous != "" && k.GraceUntil != nil && now.Before(*k.GraceUntil) {
+	if k.Previous != "" && k.GraceUntil != nil && time.Now().Before(*k.GraceUntil) {
 		keys = append(keys, k.Previous)
 	}
 	return keys
 }
 
 // Store persists a single KeySet (one rotation slot). Use one store per service;
-// for multiple surfaces, use separate files or secret paths. Implementations
-// must be safe for concurrent use within a process.
+// for multiple surfaces, use separate files or secret paths.
 type Store interface {
 	Get(ctx context.Context) (KeySet, error)
 	Put(ctx context.Context, ks KeySet) error

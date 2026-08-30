@@ -11,7 +11,7 @@ import (
 
 var _ Store = (*FileStore)(nil)
 
-// FileStore persists one KeySet as JSON at path. Use one file per service (for example keys/deeplink.json).
+// FileStore persists one KeySet as JSON at path.
 type FileStore struct {
 	path string
 	mu   sync.Mutex

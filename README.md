@@ -71,16 +71,6 @@ keys, err := kr.ValidKeys(ctx) // current + previous during grace
 
 `New` accepts a `Store`; adapters return their concrete type (`*FileStore`) and satisfy the interface implicitly.
 
-### HTTP middleware (optional)
-
-Sugar around `ValidKeys` for `net/http` servers. Accepts `X-API-Key` or `Authorization: Bearer <key>`. GET/HEAD/OPTIONS are not protected.
-
-```go
-handler := keyring.Middleware(kr)(mux)
-```
-
-Prefer `ValidKeys` directly if you already have auth middleware. Keys are reloaded on every request, so file-backed stores pick up rotations without a restart.
-
 ## Rotation flow
 
 ```
@@ -88,14 +78,6 @@ ACTIVE  →  rotate  →  GRACE (current + previous valid)
 GRACE   →  revoke  →  ACTIVE (previous cleared)
 GRACE   →  grace_until expires  →  previous rejected by ValidKeys
 ```
-
-## Tests & examples
-
-```bash
-go test ./...
-```
-
-Godoc examples live in `keyring_test.go` (`ExampleNew`, `ExampleMiddleware`).
 
 ## Roadmap
 
