@@ -2,6 +2,7 @@ package keyring_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -161,13 +162,68 @@ func TestFileStore(t *testing.T) {
 	}
 }
 
+func TestRotateInGrace(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	kr := testKeyring(t)
+	mustRotate(t, kr)
+	second := mustRotate(t, kr)
+	if _, err := kr.Rotate(ctx); !errors.Is(err, keyring.ErrInGrace) {
+		t.Fatalf("rotate in grace: err = %v, want ErrInGrace", err)
+	}
+	if ks, _ := kr.Status(ctx); ks.Current != second.Current || ks.Previous != second.Previous {
+		t.Fatalf("refused rotate changed the key set: %+v", ks)
+	}
+	if _, err := kr.Revoke(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mustRotate(t, kr)
+
+	// Once grace has expired, rotating needs no revoke.
+	expired := keyring.New(keyring.NewFileStore(filepath.Join(t.TempDir(), "keys.json")), time.Nanosecond)
+	mustRotate(t, expired)
+	mustRotate(t, expired)
+	time.Sleep(time.Millisecond)
+	mustRotate(t, expired)
+}
+
+type failingStore struct{ err error }
+
+func (f failingStore) Get(context.Context) (keyring.KeySet, error) { return keyring.KeySet{}, f.err }
+func (f failingStore) Put(context.Context, keyring.KeySet) error   { return f.err }
+
+func TestMiddlewareOnError(t *testing.T) {
+	t.Parallel()
+
+	storeErr := errors.New("store down")
+	var got error
+	handler := keyring.Middleware(
+		keyring.New(failingStore{storeErr}, time.Hour),
+		keyring.OnError(func(_ *http.Request, err error) { got = err }),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", "kr_any")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if !errors.Is(got, storeErr) {
+		t.Fatalf("OnError got %v, want %v", got, storeErr)
+	}
+}
+
 func exampleSetup() (*keyring.Keyring, func(), error) {
 	dir, err := os.MkdirTemp("", "keyring-example-*")
 	if err != nil {
 		return nil, nil, err
 	}
 	kr := keyring.New(keyring.NewFileStore(filepath.Join(dir, "keys.json")), time.Hour)
-	return kr, func() { os.RemoveAll(dir) }, nil
+	return kr, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 func ExampleNew() {

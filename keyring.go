@@ -3,11 +3,9 @@ package keyring
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"net/http"
-	"strings"
 	"time"
 )
 
@@ -43,12 +41,20 @@ func New(store Store, grace time.Duration, opts ...Option) *Keyring {
 	return k
 }
 
+// ErrInGrace is returned by Rotate while the previous key is still in its
+// grace period: rotating again would drop it at once, cutting off clients that
+// haven't switched yet. Revoke first to do that on purpose.
+var ErrInGrace = errors.New("previous key is still in its grace period; revoke it first")
+
 // Rotate generates a new key, moves the current key to previous, and starts
 // the grace period. On the first rotation, only current is set.
 func (k *Keyring) Rotate(ctx context.Context) (KeySet, error) {
 	ks, err := k.store.Get(ctx)
 	if err != nil {
 		return KeySet{}, fmt.Errorf("get key set: %w", err)
+	}
+	if ks.State(time.Now()) == StateGrace {
+		return KeySet{}, ErrInGrace
 	}
 
 	newKey, err := generateKey(k.prefix)
@@ -118,30 +124,4 @@ func generateKey(prefix string) (string, error) {
 		return "", err
 	}
 	return prefix + hex.EncodeToString(b), nil
-}
-
-// Middleware is optional HTTP sugar around ValidKeys. Prefer ValidKeys for custom auth.
-func Middleware(kr *Keyring) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			keys, err := kr.ValidKeys(r.Context())
-			if err != nil || len(keys) == 0 {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			token := r.Header.Get("X-API-Key")
-			if token == "" {
-				token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			}
-			tokenBytes := []byte(token)
-			for _, key := range keys {
-				if subtle.ConstantTimeCompare(tokenBytes, []byte(key)) == 1 {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-		})
-	}
 }

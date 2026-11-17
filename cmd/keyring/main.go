@@ -26,43 +26,36 @@ func main() {
 
 	ctx := context.Background()
 
+	var ks keyring.KeySet
+	var err error
 	switch os.Args[1] {
 	case "rotate":
-		ks, err := kr.Rotate(ctx)
-		if err != nil {
-			exitErr(err)
-		}
-		printKeySet(ks, time.Now())
+		ks, err = kr.Rotate(ctx)
 	case "status":
-		ks, err := kr.Status(ctx)
-		if err != nil {
-			exitErr(err)
-		}
-		printKeySet(ks, time.Now())
+		ks, err = kr.Status(ctx)
 	case "revoke":
-		ks, err := kr.Revoke(ctx)
-		if err != nil {
-			exitErr(err)
-		}
-		printKeySet(ks, time.Now())
+		ks, err = kr.Revoke(ctx)
 	default:
 		usage()
 		os.Exit(2)
 	}
+	if err != nil {
+		exitErr(err)
+	}
+	// Only rotate prints a key, and only the new one, on stdout.
+	if os.Args[1] == "rotate" {
+		fmt.Println(ks.Current)
+	}
+	printState(ks, time.Now())
 }
 
-func printKeySet(ks keyring.KeySet, now time.Time) {
-	fmt.Printf("state:   %s\n", ks.State(now))
-	fmt.Printf("current: %s\n", ks.Current)
-	if ks.Previous != "" {
-		fmt.Printf("previous: %s\n", ks.Previous)
+func printState(ks keyring.KeySet, now time.Time) {
+	state := ks.State(now)
+	if state == keyring.StateGrace {
+		fmt.Fprintf(os.Stderr, "%s: previous key valid until %s\n", state, ks.GraceUntil.Format(time.RFC3339))
+		return
 	}
-	if ks.GraceUntil != nil {
-		fmt.Printf("grace_until: %s\n", ks.GraceUntil.Format(time.RFC3339))
-	}
-	if ks.RotatedAt != nil {
-		fmt.Printf("rotated_at:  %s\n", ks.RotatedAt.Format(time.RFC3339))
-	}
+	fmt.Fprintln(os.Stderr, state)
 }
 
 func usage() {
