@@ -48,6 +48,8 @@ keyring status -file keys.json
 keyring revoke -file keys.json
 ```
 
+`rotate` prints the new key on stdout and is the only command that shows a key; the state goes to stderr.
+
 Example `keys.json` after rotation:
 
 ```json
@@ -67,6 +69,11 @@ kr := keyring.New(store, 24*time.Hour)
 
 ks, err := kr.Rotate(ctx)
 keys, err := kr.ValidKeys(ctx) // current + previous during grace
+
+// Or guard every route; OnError reports why a request got 401 when the store fails.
+mw := keyring.Middleware(kr, keyring.OnError(func(r *http.Request, err error) {
+	slog.Error("read API keys", "error", err)
+}))
 ```
 
 `New` accepts a `Store`; adapters return their concrete type (`*FileStore`) and satisfy the interface implicitly.
@@ -77,7 +84,12 @@ keys, err := kr.ValidKeys(ctx) // current + previous during grace
 ACTIVE  →  rotate  →  GRACE (current + previous valid)
 GRACE   →  revoke  →  ACTIVE (previous cleared)
 GRACE   →  grace_until expires  →  previous rejected by ValidKeys
+GRACE   →  rotate  →  refused (ErrInGrace); revoke first
 ```
+
+Rotating during grace would drop the previous key at once, cutting off clients that haven't switched yet, so it's refused.
+
+Two operators rotating at the same moment can overwrite each other; stores have no compare-and-swap yet.
 
 ## Roadmap
 
